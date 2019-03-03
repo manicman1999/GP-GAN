@@ -1,5 +1,5 @@
 # Gradient Penalty DCGAN
-Gradient Penalty DCGAN
+Gradient Penalty DCGAN built on Keras.
 
 Data collected from here:
 https://www.reddit.com/r/flowers
