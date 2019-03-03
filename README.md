@@ -9,7 +9,7 @@ Related Paper:
 https://arxiv.org/pdf/1801.04406.pdf
 
 
-![alt text](https://i.imgur.com/gXNfM7i.jpg)
+![alt text](https://i.imgur.com/fcujEbp.jpg)
 
 # Use
 To use, rename all images in your dataset according to this convention: "im (n).png"
