@@ -1,5 +1,12 @@
 # -*- coding: utf-8 -*-
 """
+Created on Tue Mar  5 14:13:08 2019
+
+@author: Matthew
+"""
+
+# -*- coding: utf-8 -*-
+"""
 Created on Fri Jul 13 13:57:15 2018
 
 @author: mtm916
@@ -12,13 +19,11 @@ from math import floor
 import numpy as np
 import time
 from functools import partial
-from random import random
 
-im_size = 256
+im_size = 32
 latent_size = 64
 BATCH_SIZE = 8
-directory = "Flowers"
-n_images = 8189
+directory = "Swords"
 
 def noise(n):
     return np.random.normal(0.0, 1.0, size = [n, latent_size])
@@ -55,32 +60,6 @@ def import_images(loc, flip = True, suffix = 'png'):
             
     return np.array(out)
 
-class dataGenerator(object):
-    
-    def __init__(self, loc, n, flip = True, suffix = 'png'):
-        self.loc = "data/"+loc
-        self.flip = True
-        self.suffix = suffix
-        self.n = n
-    
-    def get_batch(self, amount):
-        
-        idx = np.random.randint(0, self.n - 1, amount) + 1
-        out = []
-        
-        for i in idx:
-            temp = Image.open(self.loc+"/im ("+str(i)+")."+self.suffix+"").convert('RGB')
-            temp1 = np.array(temp.convert('RGB'), dtype='float32') / 255
-            if self.flip and random() > 0.5:
-                temp1 = np.flip(temp1, 1)
-                
-            out.append(temp1)
-            
-        
-        return np.array(out)
-
-        
-
 
     
 from keras.layers import Conv2D, Dense, AveragePooling2D, Conv2DTranspose, BatchNormalization
@@ -89,7 +68,6 @@ from keras.models import model_from_json, Sequential
 from keras.optimizers import RMSprop
 import keras.backend as K
 from keras.models import Model
-
 
 
 def gradient_penalty_loss(y_true, y_pred, averaged_samples, weight):
@@ -145,9 +123,11 @@ class GAN(object):
         #Models
         self.D = None
         self.G = None
+        self.E = None
         
         self.DM = None
         self.AM = None
+        self.VM = None
         
         #Config
         self.LR = lr
@@ -156,6 +136,7 @@ class GAN(object):
         #Init Models
         self.discriminator()
         self.generator()
+        self.encoder()
         
     def discriminator(self):
         
@@ -227,6 +208,44 @@ class GAN(object):
         
         return self.G
     
+    def encoder(self):
+        
+        if self.E:
+            return self.E
+        
+        inp = Input(shape = [im_size, im_size, 3])
+        
+        # Size
+        x = d_block(inp, 8) #Size / 2
+        x = d_block(x, 16) #Size / 4
+        x = d_block(x, 32) #Size / 8
+        
+        if (im_size > 32):
+            x = d_block(x, 64) #Size / 16
+        
+        if (im_size > 64):
+            x = d_block(x, 128) #Size / 32
+        
+        if (im_size > 128):
+            x = d_block(x, 256) #Size / 64
+        
+        if (im_size > 256):
+            x = d_block(x, 512) #Size / 128
+            
+        if (im_size > 512):
+            x = d_block(x, 1024) #Size / 256
+            
+            
+        x = Flatten()(x)
+        
+        x = Dense(512, activation = 'relu')(x)
+        
+        x = Dense(latent_size)(x)
+        
+        self.E = Model(inputs = inp, outputs = x)
+        
+        return self.E
+    
     def AdModel(self):
         
         #D does not update
@@ -288,6 +307,28 @@ class GAN(object):
         self.DM.compile(optimizer=RMSprop(self.LR, decay = 0.00001), loss=['binary_crossentropy', 'binary_crossentropy', partial_gp_loss])
         
         return self.DM
+    
+    def VAEModel(self):
+        
+        self.G.trainable = True
+        for layer in self.G.layers:
+            layer.trainable = True
+        
+        #VAE
+        inp1 = Input(shape = [im_size, im_size, 3])
+        vae = self.E(inp1)
+        vae = self.G(vae)
+        
+        #LR
+        inp2 = Input(shape = [latent_size])
+        lr = self.G(inp2)
+        lr = self.E(lr)
+        
+        self.VM = Model(inputs = [inp1, inp2], outputs = [vae, lr])
+        
+        self.VM.compile(optimizer=RMSprop(self.LR * 0.5, decay = 0.000015), loss=['mse', 'mse'])
+        
+        return self.VM
         
         
 
@@ -299,6 +340,7 @@ class WGAN(object):
         self.GAN = GAN(lr = lr)
         self.DisModel = self.GAN.DisModel()
         self.AdModel = self.GAN.AdModel()
+        self.VAEModel = self.GAN.VAEModel()
         self.generator = self.GAN.generator()
         
         if steps >= 0:
@@ -308,8 +350,7 @@ class WGAN(object):
         
         self.noise_level = 0
         
-        #self.ImagesA = import_images(directory, True)
-        self.im = dataGenerator(directory, n_images, suffix = 'jpg')
+        self.ImagesA = import_images(directory, True)
         
         self.silent = silent
         
@@ -323,12 +364,14 @@ class WGAN(object):
         #Train Alternating
         a = self.train_dis()
         b = self.train_gen()
+        c = self.train_vae()
         
         #Print info
         if self.GAN.steps % 200 == 0 and not self.silent:
             print("\n\nRound " + str(self.GAN.steps) + ":")
             print("D: " + str(a))
             print("G: " + str(b))
+            print("V: " + str(c))
             s = round((time.clock() - self.lastblip) * 1000) / 1000
             print("T: " + str(s) + " sec")
             self.lastblip = time.clock()
@@ -343,7 +386,7 @@ class WGAN(object):
     def train_dis(self):
         
         #Get Data
-        train_data = [self.im.get_batch(BATCH_SIZE), noise(BATCH_SIZE)]
+        train_data = [get_rand(self.ImagesA, BATCH_SIZE), noise(BATCH_SIZE)]
         
         #Train
         d_loss = self.DisModel.train_on_batch(train_data, [self.ones, self.zeros, self.zeros])
@@ -356,6 +399,14 @@ class WGAN(object):
         g_loss = self.AdModel.train_on_batch(noise(BATCH_SIZE), self.ones)
         
         return g_loss
+    
+    def train_vae(self):
+        
+        train_data = [get_rand(self.ImagesA, BATCH_SIZE), noise(BATCH_SIZE)]
+        
+        v_loss = self.VAEModel.train_on_batch(train_data, train_data)
+        
+        return v_loss
     
     def evaluate(self, num = 0, trunc = 2.0):
         
@@ -400,6 +451,7 @@ class WGAN(object):
     def save(self, num): #Save JSON and Weights into /Models/
         self.saveModel(self.GAN.G, "gen", num)
         self.saveModel(self.GAN.D, "dis", num)
+        self.saveModel(self.GAN.E, "enc", num)
         
 
     def load(self, num): #Load JSON and Weights from /Models/
@@ -411,12 +463,14 @@ class WGAN(object):
         #Load Models
         self.GAN.G = self.loadModel("gen", num)
         self.GAN.D = self.loadModel("dis", num)
+        self.GAN.E = self.loadModel("enc", num)
         
         self.GAN.steps = steps1
         
         self.generator = self.GAN.generator()
         self.DisModel = self.GAN.DisModel()
         self.AdModel = self.GAN.AdModel()
+        self.VAEModel = self.GAN.VAEModel()
     
         
     def sample(self, n):

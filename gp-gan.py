@@ -13,10 +13,10 @@ import numpy as np
 import time
 from functools import partial
 
-im_size = 256
+im_size = 32
 latent_size = 64
 BATCH_SIZE = 8
-directory = "Flowers"
+directory = "Swords"
 
 def noise(n):
     return np.random.normal(0.0, 1.0, size = [n, latent_size])
